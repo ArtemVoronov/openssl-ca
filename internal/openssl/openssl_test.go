@@ -1,6 +1,7 @@
 package openssl
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -60,6 +61,23 @@ func TestVersion(t *testing.T) {
 
 	if stdout == UnknownVersion {
 		t.Errorf("expected correct version, actual: %v", stdout)
+		return
+	}
+}
+
+func TestGenereatePrivateKey(t *testing.T) {
+	// TODO: finish
+	openssl := NewTestOpenssl()
+	testPassword := "password"
+
+	stdout, stderr, err := openssl.GeneratePrivateKey(testPassword)
+
+	fmt.Printf("stdout: %v\n", stdout)
+	fmt.Printf("stderr: %v\n", stderr)
+	fmt.Printf("err: %v\n", err)
+
+	if stdout == "" {
+		fmt.Errorf("expected nonempty stdout")
 		return
 	}
 }

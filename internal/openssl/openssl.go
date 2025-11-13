@@ -8,14 +8,18 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
 var (
-	ErrOpensslNotFound       = errors.New("openssl not found")
-	ErrOpensslConfigNotFound = errors.New("openssl config not found")
-	ErrTimeout               = errors.New("timeout exceeded")
-	ErrParseVersion          = errors.New("unable to parse version")
+	ErrOpensslNotFound            = errors.New("openssl not found")
+	ErrOpensslConfigNotFound      = errors.New("openssl config not found")
+	ErrTimeout                    = errors.New("timeout exceeded")
+	ErrParseVersion               = errors.New("unable to parse version")
+	ErrUnableToCreatePasswordPipe = errors.New("unable to create password pipe")
+	ErrUnableToSendPasswordByPipe = errors.New("unable to send password by pipe")
+	ErrPasswordRequired           = errors.New("password is required")
 )
 
 const (
@@ -25,7 +29,8 @@ const (
 	DefaultCommandPath = "openssl"
 	DefaultConfigPath  = "/etc/openssl/openssl.cnf"
 
-	CmdVersion = "version"
+	CmdVersion            = "version"
+	CmdGeneratePrivateKey = "genpkey"
 )
 
 type Config struct {
@@ -123,4 +128,71 @@ func (o *Openssl) parseVersion(stdout string) (string, error) {
 		result = tokens[1]
 	}
 	return result, err
+}
+
+const (
+	KeyGenBits1024 = 1024
+	KeyGenBits2048 = 2048
+	KeyGenBits3072 = 3072
+	KeyGenBits4096 = 4096
+
+	DefaultKeyGenBits = KeyGenBits2048
+	DefaultCipher     = "-aes-256-cbc"
+	DefaultAlgorithm  = "rsa"
+)
+
+func (o *Openssl) GeneratePrivateKey(password string) (string, string, error) {
+	if strings.TrimSpace(password) == "" {
+		return "", "", ErrPasswordRequired
+	}
+
+	// для безопасности вводим пароль через пайп, см. man openssl-genpkey и openssl-passphrase-options
+	// ожидаем, что он присвоит пайпу файловый дескриптор за номером 3
+	r, w, err := os.Pipe()
+	if err != nil {
+		fmt.Printf("error during opening pipe: %v\n", err)
+		return "", "", ErrUnableToCreatePasswordPipe
+	}
+	fmt.Printf("r.Name(): %v\n", r.Name()) // TODO: clean
+	fmt.Printf("w.Name(): %v\n", w.Name()) // TODO: clean
+	fmt.Printf("r.Fd(): %v\n", r.Fd())     // TODO: clean
+	fmt.Printf("w.Fd(): %v\n", w.Fd())     // TODO: clean
+	defer r.Close()
+	defer w.Close()
+
+	// отдельной горутиной осуществляем ввод пароля
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, err2 := w.WriteString(password + "\n")
+		if err2 != nil {
+			fmt.Printf("error during writing password: %v\n", err2)
+			err = ErrUnableToSendPasswordByPipe
+		} else {
+			fmt.Println("done writing password")
+		}
+	}()
+	wg.Wait()
+
+	if err != nil {
+		return "", "", ErrUnableToCreatePasswordPipe
+	}
+
+	args := []string{
+		CmdGeneratePrivateKey,
+		"-algorithm", DefaultAlgorithm,
+		"-pkeyopt", fmt.Sprintf("rsa_keygen_bits:%d", DefaultKeyGenBits),
+		DefaultCipher,
+		"-pass", fmt.Sprintf("fd:%d", r.Fd()),
+	}
+
+	fmt.Println(args) // TODO: clean
+
+	stdout, stderr, err := o.Run(args...)
+	if err != nil {
+		return stdout, stderr, err
+	}
+
+	return stdout, stderr, err
 }
