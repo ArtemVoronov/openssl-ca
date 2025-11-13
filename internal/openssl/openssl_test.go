@@ -2,6 +2,7 @@ package openssl
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -65,10 +66,10 @@ func TestVersion(t *testing.T) {
 	}
 }
 
-func TestGenereatePrivateKey(t *testing.T) {
-	// TODO: finish
+func TestGenereatePrivateKeyWithoutPassword(t *testing.T) {
 	openssl := NewTestOpenssl()
-	testPassword := "password"
+	testPassword := ""
+	expectedBlockHeader := "-----END PRIVATE KEY-----"
 
 	stdout, stderr, err := openssl.GeneratePrivateKey(testPassword)
 
@@ -76,8 +77,35 @@ func TestGenereatePrivateKey(t *testing.T) {
 	fmt.Printf("stderr: %v\n", stderr)
 	fmt.Printf("err: %v\n", err)
 
-	if stdout == "" {
-		fmt.Errorf("expected nonempty stdout")
+	if err != nil {
+		t.Errorf("expected no errors, but it has: %v\n", err)
+		return
+	}
+
+	if !strings.Contains(stdout, expectedBlockHeader) {
+		t.Errorf("expected string in stdout: %v, but it is missed\n", expectedBlockHeader)
+		return
+	}
+}
+
+func TestGenereatePrivateKeyWithPassword(t *testing.T) {
+	openssl := NewTestOpenssl()
+	testPassword := "password"
+	expectedBlockHeader := "-----END ENCRYPTED PRIVATE KEY-----"
+
+	stdout, stderr, err := openssl.GeneratePrivateKey(testPassword)
+
+	fmt.Printf("stdout: %v\n", stdout)
+	fmt.Printf("stderr: %v\n", stderr)
+	fmt.Printf("err: %v\n", err)
+
+	if err != nil {
+		t.Errorf("expected no errors, but it has: %v\n", err)
+		return
+	}
+
+	if !strings.Contains(stdout, expectedBlockHeader) {
+		t.Errorf("expected string in stdout: %v, but it is missed\n", expectedBlockHeader)
 		return
 	}
 }

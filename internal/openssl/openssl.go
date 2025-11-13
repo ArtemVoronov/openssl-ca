@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -19,7 +18,6 @@ var (
 	ErrParseVersion               = errors.New("unable to parse version")
 	ErrUnableToCreatePasswordPipe = errors.New("unable to create password pipe")
 	ErrUnableToSendPasswordByPipe = errors.New("unable to send password by pipe")
-	ErrPasswordRequired           = errors.New("password is required")
 )
 
 const (
@@ -43,6 +41,11 @@ type Openssl struct {
 	commandPath string
 	configPath  string
 	timeout     time.Duration
+}
+
+type RunOptions struct {
+	ExtraFiles []*os.File
+	Args       []string
 }
 
 func New(config Config) Openssl {
@@ -77,12 +80,15 @@ func (o *Openssl) SelfCheckAndNormalize(arg ...string) error {
 	return nil
 }
 
-func (o *Openssl) Run(arg ...string) (string, string, error) {
+func (o *Openssl) Run(runOptions RunOptions) (string, string, error) {
 	var stdout, stderr bytes.Buffer
 
-	cmd := exec.Command(o.commandPath, arg...)
+	cmd := exec.Command(o.commandPath, runOptions.Args...)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	if runOptions.ExtraFiles != nil || len(runOptions.ExtraFiles) > 0 {
+		cmd.ExtraFiles = runOptions.ExtraFiles
+	}
 
 	err := cmd.Start()
 	if err != nil {
@@ -108,7 +114,11 @@ func (o *Openssl) Run(arg ...string) (string, string, error) {
 }
 
 func (o *Openssl) Version() (string, string, error) {
-	stdout, stderr, err := o.Run(CmdVersion)
+	runOptions := RunOptions{
+		ExtraFiles: nil,
+		Args:       []string{CmdVersion},
+	}
+	stdout, stderr, err := o.Run(runOptions)
 	if err != nil {
 		return stdout, stderr, err
 	}
@@ -142,57 +152,38 @@ const (
 )
 
 func (o *Openssl) GeneratePrivateKey(password string) (string, string, error) {
-	if strings.TrimSpace(password) == "" {
-		return "", "", ErrPasswordRequired
+	runOptions := RunOptions{}
+
+	runOptions.Args = []string{
+		CmdGeneratePrivateKey,
+		"-config", o.configPath,
+		"-algorithm", DefaultAlgorithm,
+		"-pkeyopt", fmt.Sprintf("rsa_keygen_bits:%d", DefaultKeyGenBits),
 	}
 
-	// для безопасности вводим пароль через пайп, см. man openssl-genpkey и openssl-passphrase-options
-	// ожидаем, что он присвоит пайпу файловый дескриптор за номером 3
+	// no password case
+	hasPassword := strings.TrimSpace(password) != ""
+	if !hasPassword {
+		return o.Run(runOptions)
+	}
+
+	// has password case
+	// use pipe for security reasons, see man openssl-genpkey and openssl-passphrase-options
 	r, w, err := os.Pipe()
 	if err != nil {
-		fmt.Printf("error during opening pipe: %v\n", err)
 		return "", "", ErrUnableToCreatePasswordPipe
 	}
-	fmt.Printf("r.Name(): %v\n", r.Name()) // TODO: clean
-	fmt.Printf("w.Name(): %v\n", w.Name()) // TODO: clean
-	fmt.Printf("r.Fd(): %v\n", r.Fd())     // TODO: clean
-	fmt.Printf("w.Fd(): %v\n", w.Fd())     // TODO: clean
 	defer r.Close()
 	defer w.Close()
 
-	// отдельной горутиной осуществляем ввод пароля
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		_, err2 := w.WriteString(password + "\n")
-		if err2 != nil {
-			fmt.Printf("error during writing password: %v\n", err2)
-			err = ErrUnableToSendPasswordByPipe
-		} else {
-			fmt.Println("done writing password")
-		}
-	}()
-	wg.Wait()
-
+	// write password
+	_, err = w.WriteString(password + "\n") // new line is required, see man openssl-passphrase-options
 	if err != nil {
-		return "", "", ErrUnableToCreatePasswordPipe
+		return "", "", fmt.Errorf("%w: %w", ErrUnableToSendPasswordByPipe, err)
 	}
 
-	args := []string{
-		CmdGeneratePrivateKey,
-		"-algorithm", DefaultAlgorithm,
-		"-pkeyopt", fmt.Sprintf("rsa_keygen_bits:%d", DefaultKeyGenBits),
-		DefaultCipher,
-		"-pass", fmt.Sprintf("fd:%d", r.Fd()),
-	}
-
-	fmt.Println(args) // TODO: clean
-
-	stdout, stderr, err := o.Run(args...)
-	if err != nil {
-		return stdout, stderr, err
-	}
-
-	return stdout, stderr, err
+	// see cmd.Command.Extrafiles, file descriptor 3+ always
+	runOptions.Args = append(runOptions.Args, DefaultCipher, "-pass", "fd:3")
+	runOptions.ExtraFiles = []*os.File{r}
+	return o.Run(runOptions)
 }
