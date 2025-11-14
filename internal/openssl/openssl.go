@@ -4,20 +4,26 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
 var (
-	ErrOpensslNotFound            = errors.New("openssl not found")
-	ErrOpensslConfigNotFound      = errors.New("openssl config not found")
-	ErrTimeout                    = errors.New("timeout exceeded")
-	ErrParseVersion               = errors.New("unable to parse version")
-	ErrUnableToCreatePasswordPipe = errors.New("unable to create password pipe")
-	ErrUnableToSendPasswordByPipe = errors.New("unable to send password by pipe")
+	ErrOpensslNotFound              = errors.New("openssl not found")
+	ErrOpensslConfigNotFound        = errors.New("openssl config not found")
+	ErrTimeout                      = errors.New("timeout exceeded")
+	ErrParseVersion                 = errors.New("unable to parse version")
+	ErrUnableToCreatePasswordPipe   = errors.New("unable to create password pipe")
+	ErrUnableToSendPasswordByPipe   = errors.New("unable to send password by pipe")
+	ErrCaPrivateKeyPasswordRequired = errors.New("ca private key password is required")
+	ErrDaysRequired                 = errors.New("parameter 'days' is required")
+	ErrCSRRequired                  = errors.New("parameter 'csr' is required")
+	ErrUnableToGetStdin             = errors.New("unable to get stdint")
 )
 
 const (
@@ -27,8 +33,10 @@ const (
 	DefaultCommandPath = "openssl"
 	DefaultConfigPath  = "/etc/openssl/openssl.cnf"
 
-	CmdVersion            = "version"
-	CmdGeneratePrivateKey = "genpkey"
+	CmdVersion = "version"
+	CmdGenPKey = "genpkey"
+	CmdReq     = "req"
+	CmdCa      = "ca"
 )
 
 type Config struct {
@@ -41,9 +49,11 @@ type Openssl struct {
 	commandPath string
 	configPath  string
 	timeout     time.Duration
+	mu          sync.Mutex
 }
 
 type RunOptions struct {
+	Input      string
 	ExtraFiles []*os.File
 	Args       []string
 }
@@ -88,6 +98,17 @@ func (o *Openssl) Run(runOptions RunOptions) (string, string, error) {
 	cmd.Stderr = &stderr
 	if runOptions.ExtraFiles != nil || len(runOptions.ExtraFiles) > 0 {
 		cmd.ExtraFiles = runOptions.ExtraFiles
+	}
+
+	if runOptions.Input != "" {
+		stdin, err := cmd.StdinPipe()
+		if err != nil {
+			return "", "", ErrUnableToGetStdin
+		}
+		go func() {
+			defer stdin.Close()
+			io.WriteString(stdin, runOptions.Input)
+		}()
 	}
 
 	err := cmd.Start()
@@ -155,7 +176,7 @@ func (o *Openssl) GeneratePrivateKey(password string) (string, string, error) {
 	runOptions := RunOptions{}
 
 	runOptions.Args = []string{
-		CmdGeneratePrivateKey,
+		CmdGenPKey,
 		"-config", o.configPath,
 		"-algorithm", DefaultAlgorithm,
 		"-pkeyopt", fmt.Sprintf("rsa_keygen_bits:%d", DefaultKeyGenBits),
@@ -185,5 +206,61 @@ func (o *Openssl) GeneratePrivateKey(password string) (string, string, error) {
 	// see cmd.Command.Extrafiles, file descriptor 3+ always
 	runOptions.Args = append(runOptions.Args, DefaultCipher, "-pass", "fd:3")
 	runOptions.ExtraFiles = []*os.File{r}
+	return o.Run(runOptions)
+}
+
+const (
+	DefaultMessageDigest = "sha256"
+)
+
+func (o *Openssl) Ca(
+	csrPem string,
+	days int,
+	caPrivateKeyPassword string,
+) (string, string, error) {
+	runOptions := RunOptions{}
+
+	hasCaPassword := strings.TrimSpace(caPrivateKeyPassword) != ""
+	hasCsr := strings.TrimSpace(csrPem) != ""
+	if !hasCaPassword {
+		return "", "", ErrCaPrivateKeyPasswordRequired
+	}
+	if !hasCsr {
+		return "", "", ErrCSRRequired
+	}
+	if days <= 0 {
+		return "", "", ErrDaysRequired
+	}
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		return "", "", ErrUnableToCreatePasswordPipe
+	}
+	defer r.Close()
+	defer w.Close()
+
+	// write password
+	_, err = w.WriteString(caPrivateKeyPassword + "\n") // new line is required, see man openssl-passphrase-options
+	if err != nil {
+		return "", "", fmt.Errorf("%w: %w", ErrUnableToSendPasswordByPipe, err)
+	}
+
+	// see cmd.Command.Extrafiles, file descriptor 3+ always
+	runOptions.Input = csrPem
+	runOptions.ExtraFiles = []*os.File{r}
+	runOptions.Args = []string{
+		CmdCa,
+		"-config", o.configPath,
+		"-days", fmt.Sprintf("%v", days),
+		"-notext",
+		"-md", DefaultMessageDigest,
+		"-passin", "fd:3",
+		"-batch",   // This sets the batch mode. In this mode no questions will be asked and all certificates will be certified automatically.
+		"-in", "-", // read csr from stdin
+	}
+
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
 	return o.Run(runOptions)
 }
