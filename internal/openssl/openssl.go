@@ -21,6 +21,9 @@ var (
 	ErrUnableToCreatePasswordPipe   = errors.New("unable to create password pipe")
 	ErrUnableToSendPasswordByPipe   = errors.New("unable to send password by pipe")
 	ErrCaPrivateKeyPasswordRequired = errors.New("ca private key password is required")
+	ErrPrivateKeyPasswordRequired   = errors.New("private key password is required")
+	ErrSubjectRequired              = errors.New("subject is required")
+	ErrPrivateKeyPathRequired       = errors.New("privat key path is required")
 	ErrDaysRequired                 = errors.New("parameter 'days' is required")
 	ErrCSRRequired                  = errors.New("parameter 'csr' is required")
 	ErrUnableToGetStdin             = errors.New("unable to get stdint")
@@ -37,6 +40,7 @@ const (
 	CmdGenPKey = "genpkey"
 	CmdReq     = "req"
 	CmdCa      = "ca"
+	CmdX509    = "X509"
 )
 
 type Config struct {
@@ -206,6 +210,10 @@ func (o *Openssl) GeneratePrivateKey(password string) (string, string, error) {
 	// see cmd.Command.Extrafiles, file descriptor 3+ always
 	runOptions.Args = append(runOptions.Args, DefaultCipher, "-pass", "fd:3")
 	runOptions.ExtraFiles = []*os.File{r}
+
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
 	return o.Run(runOptions)
 }
 
@@ -263,4 +271,116 @@ func (o *Openssl) Ca(
 	defer o.mu.Unlock()
 
 	return o.Run(runOptions)
+}
+
+// TODO: clean
+// openssl req -config openssl.cnf -key private/ca.key.pem \
+//  -new -x509 -days 7300 -sha256 -extensions v3_ca \
+//  -out certs/ca.cert.pem
+
+// openssl req -config openssl.cnf -new -sha256 \
+//  -key private/intermediate.key.pem \
+//  -out csr/intermediate.csr.pem
+
+func (o *Openssl) Req(subject string, privateKeyPath string, password string) (string, string, error) {
+	runOptions := RunOptions{}
+
+	hasPassword := strings.TrimSpace(password) != ""
+	hasSubject := strings.TrimSpace(subject) != ""
+	hasPrivateKeyPath := strings.TrimSpace(privateKeyPath) != ""
+	if !hasPassword {
+		return "", "", ErrPrivateKeyPasswordRequired
+	}
+	if !hasSubject {
+		return "", "", ErrSubjectRequired
+	}
+	if !hasPrivateKeyPath {
+		return "", "", ErrPrivateKeyPathRequired
+	}
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		return "", "", ErrUnableToCreatePasswordPipe
+	}
+	defer r.Close()
+	defer w.Close()
+
+	runOptions.Args = []string{
+		CmdReq,
+		"-config", o.configPath,
+		"-new",
+		"-subj", subject,
+		"-key", privateKeyPath,
+		"-passin", "fd:3", // see cmd.Command.Extrafiles, file descriptor 3+ always
+	}
+	runOptions.ExtraFiles = []*os.File{r}
+
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	return o.Run(runOptions)
+}
+
+func (o *Openssl) X590() (string, string, error) {
+	// TODO
+	return "", "", nil
+}
+
+const (
+	DefaultCertsDir                  = "/certs"
+	DefaultCrlDir                    = "/crl"
+	DefaultCsrDir                    = "/csr"
+	DefaultPrivateKeysDir            = "/private"
+	IndexFilename                    = "index.txt"
+	IndexAttributesFilename          = "index.txt.attr"
+	SerialFilename                   = "serial"
+	DefaultSerial                    = "1000" // TODO: extend
+	DefaultOpensslConfigFilename     = "openssl.cnf"
+	DefaultOpensslCaConfig           = "../../config/default.ca.openssl.cnf"
+	DefaultOpensslIntermediateConfig = "../../config/default.intermediate.openssl.cnf"
+)
+
+// generate dir
+// generate private key
+// generate root ca cert
+func InitCa(path string) error {
+	// 	TODO: finish
+	err := os.MkdirAll(path+DefaultCertsDir, 0700)
+	if err != nil {
+		return err
+	}
+	err = os.MkdirAll(path+DefaultCrlDir, 0700)
+	if err != nil {
+		return err
+	}
+	err = os.MkdirAll(path+DefaultCsrDir, 0700)
+	if err != nil {
+		return err
+	}
+	err = os.MkdirAll(path+DefaultPrivateKeysDir, 0700)
+	if err != nil {
+		return err
+	}
+	err = os.WriteFile(path+"/"+IndexFilename, []byte(""), 0700)
+	if err != nil {
+		return err
+	}
+	err = os.WriteFile(path+"/"+IndexAttributesFilename, []byte("unique_subject = yes"), 0700)
+	if err != nil {
+		return err
+	}
+	err = os.WriteFile(path+"/"+SerialFilename, []byte(DefaultSerial), 0700)
+	if err != nil {
+		return err
+	}
+	opensslCaConfig, err := os.ReadFile(DefaultOpensslCaConfig)
+	if err != nil {
+		return err
+	}
+	err = os.WriteFile(path+"/"+DefaultOpensslConfigFilename, opensslCaConfig, 0700)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
