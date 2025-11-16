@@ -69,9 +69,10 @@ func TestVersion(t *testing.T) {
 func TestGenereatePrivateKeyWithoutPassword(t *testing.T) {
 	openssl := NewTestOpenssl()
 	testPassword := ""
+	testOut := "" // no out path, send result to stdout
 	expectedBlockHeader := "-----END PRIVATE KEY-----"
 
-	stdout, _, err := openssl.GeneratePrivateKey(testPassword)
+	stdout, _, err := openssl.GeneratePrivateKey(testPassword, testOut)
 	if err != nil {
 		t.Errorf("expected no errors, but it has: %v\n", err)
 		return
@@ -86,9 +87,10 @@ func TestGenereatePrivateKeyWithoutPassword(t *testing.T) {
 func TestGenereatePrivateKeyWithPassword(t *testing.T) {
 	openssl := NewTestOpenssl()
 	testPassword := "password"
+	testOut := "" // no out path, send result to stdout
 	expectedBlockHeader := "-----END ENCRYPTED PRIVATE KEY-----"
 
-	stdout, _, err := openssl.GeneratePrivateKey(testPassword)
+	stdout, _, err := openssl.GeneratePrivateKey(testPassword, testOut)
 	if err != nil {
 		t.Errorf("expected no errors, but it has: %v\n", err)
 		return
@@ -101,7 +103,7 @@ func TestGenereatePrivateKeyWithPassword(t *testing.T) {
 }
 
 func TestCa(t *testing.T) {
-	// TODO: finish and unify
+	// TODO: init isolated ca structute, create root ca pk, cert, then create some csr and sign it
 	var testConfig Config = Config{
 		CommandPath: "openssl",
 		ConfigPath:  "/Users/voronov/Temp/openssl_testing/intermediate/openssl.cnf",
@@ -111,9 +113,10 @@ func TestCa(t *testing.T) {
 
 	testPassword := "password"
 	testDays := 365
+	testOut := "" // no out path, send result to stdout
 	expectedBlockHeader := "-----BEGIN CERTIFICATE-----"
 
-	stdout, stderr, err := openssl.Ca(testCsr, testDays, testPassword)
+	stdout, stderr, err := openssl.Ca(testCsr, testDays, testPassword, testOut)
 	if err != nil {
 		t.Errorf("expected no errors, but it has: %v\n", err)
 		return
