@@ -1,7 +1,7 @@
 package openssl
 
 import (
-	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -103,10 +103,21 @@ func TestGenereatePrivateKeyWithPassword(t *testing.T) {
 }
 
 func TestCa(t *testing.T) {
-	// TODO: init isolated ca structute, create root ca pk, cert, then create some csr and sign it
+	testOpensslCaConfig := "../../config/test.ca.openssl.cnf"
+	testCaPath := "/tmp/openssl_testing/test_ca"
+	testCaPassword := "password"
+	testCaSubject := "/CN=Test Root CA"
+	testCaDays := 7300
+
+	err := InitCa(testOpensslCaConfig, testCaPath, testCaPassword, testCaSubject, testCaDays)
+	if err != nil {
+		t.Errorf("expected no errors during creating ca, but it has: %v\n", err)
+		return
+	}
+
 	var testConfig Config = Config{
 		CommandPath: "openssl",
-		ConfigPath:  "/Users/voronov/Temp/openssl_testing/intermediate/openssl.cnf",
+		ConfigPath:  testCaPath + "/openssl.cnf",
 		Timeout:     10 * time.Second,
 	}
 	openssl := New(testConfig)
@@ -116,19 +127,20 @@ func TestCa(t *testing.T) {
 	testOut := "" // no out path, send result to stdout
 	expectedBlockHeader := "-----BEGIN CERTIFICATE-----"
 
-	stdout, stderr, err := openssl.Ca(testCsr, testDays, testPassword, testOut)
+	stdout, _, err := openssl.Ca(testCsr, testDays, testPassword, testOut)
 	if err != nil {
 		t.Errorf("expected no errors, but it has: %v\n", err)
 		return
 	}
 
-	// TODO: clean
-	fmt.Printf("stdout: %v\n", stdout)
-	fmt.Printf("stderr: %v\n", stderr)
-	fmt.Printf("err: %v\n", err)
-
 	if !strings.Contains(stdout, expectedBlockHeader) {
 		t.Errorf("expected string in stdout: %v, but it is missed\n", expectedBlockHeader)
+		return
+	}
+
+	err = os.RemoveAll(testCaPath)
+	if err != nil {
+		t.Errorf("expected no errors, but it has: %v\n", err)
 		return
 	}
 }

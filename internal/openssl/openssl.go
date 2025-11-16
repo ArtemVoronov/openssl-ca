@@ -40,7 +40,7 @@ const (
 	CmdGenPKey = "genpkey"
 	CmdReq     = "req"
 	CmdCa      = "ca"
-	CmdX509    = "X509"
+	CmdX509    = "x509"
 )
 
 type Config struct {
@@ -340,27 +340,79 @@ func (o *Openssl) Req(
 	return o.Run(runOptions)
 }
 
-func (o *Openssl) X590() (string, string, error) {
-	// TODO
-	return "", "", nil
+func (o *Openssl) X590(password string,
+	privateKeyPath string,
+	csrPath string,
+	days int,
+	outPath string,
+) (string, string, error) {
+	runOptions := RunOptions{}
+
+	hasPassword := strings.TrimSpace(password) != ""
+	hasPrivateKeyPath := strings.TrimSpace(privateKeyPath) != ""
+	hasCsr := strings.TrimSpace(csrPath) != ""
+	if !hasCsr {
+		return "", "", ErrCSRRequired
+	}
+	if days <= 0 {
+		return "", "", ErrDaysRequired
+	}
+	if !hasPassword {
+		return "", "", ErrPrivateKeyPasswordRequired
+	}
+	if !hasPrivateKeyPath {
+		return "", "", ErrPrivateKeyPathRequired
+	}
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		return "", "", ErrUnableToCreatePasswordPipe
+	}
+	defer r.Close()
+	defer w.Close()
+
+	// write password
+	_, err = w.WriteString(password + "\n") // new line is required, see man openssl-passphrase-options
+	if err != nil {
+		return "", "", fmt.Errorf("%w: %w", ErrUnableToSendPasswordByPipe, err)
+	}
+
+	runOptions.Args = []string{
+		CmdX509,
+		"-key", privateKeyPath,
+		"-days", fmt.Sprintf("%v", days),
+		"-req", "-in", csrPath,
+		"-passin", "fd:3", // see cmd.Command.Extrafiles, file descriptor 3+ always
+	}
+
+	hasOutPath := strings.TrimSpace(outPath) != ""
+	if hasOutPath {
+		runOptions.Args = append(runOptions.Args, "-out", outPath)
+	}
+
+	runOptions.ExtraFiles = []*os.File{r}
+
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	return o.Run(runOptions)
 }
 
 const (
-	DefaultCertsDir                  = "/certs"
-	DefaultCrlDir                    = "/crl"
-	DefaultCsrDir                    = "/csr"
-	DefaultPrivateKeysDir            = "/private"
-	IndexFilename                    = "index.txt"
-	IndexAttributesFilename          = "index.txt.attr"
-	SerialFilename                   = "serial"
-	DefaultIndexAttrs                = "unique_subject = yes"
-	DefaultSerial                    = "1000" // TODO: extend
-	DefaultOpensslConfigFilename     = "openssl.cnf"
-	DefaultOpensslCaConfig           = "../../config/default.ca.openssl.cnf"
-	DefaultOpensslIntermediateConfig = "../../config/default.intermediate.openssl.cnf"
-	DefaultRootCaPrivateKeyName      = "ca.key.pem"
-	DefaultRootCaCsrName             = "ca.csr.pem"
-	DefaultRootCaCertName            = "ca.cert.pem"
+	DefaultCertsDir              = "/certs"
+	DefaultNewCertsDir           = "/newcerts"
+	DefaultCrlDir                = "/crl"
+	DefaultCsrDir                = "/csr"
+	DefaultPrivateKeysDir        = "/private"
+	IndexFilename                = "index.txt"
+	IndexAttributesFilename      = "index.txt.attr"
+	SerialFilename               = "serial"
+	DefaultIndexAttrs            = "unique_subject = no"
+	DefaultSerial                = "1000" // TODO: extend
+	DefaultOpensslConfigFilename = "openssl.cnf"
+	DefaultRootCaPrivateKeyName  = "ca.key.pem"
+	DefaultRootCaCsrName         = "ca.csr.pem"
+	DefaultRootCaCertName        = "ca.cert.pem"
 )
 
 type CaFile struct {
@@ -370,11 +422,9 @@ type CaFile struct {
 	isDir      bool
 }
 
-// generate dir
-// generate private key
-// generate root ca cert
-func InitCa(path string, password string, subject string) error {
-	opensslConfigData, err := os.ReadFile(DefaultOpensslCaConfig)
+func InitCa(configPathstring string, path string, password string, subject string, days int) error {
+	// TODO: wrap errors with stderr
+	opensslConfigData, err := os.ReadFile(configPathstring)
 	if err != nil {
 		return err
 	}
@@ -382,6 +432,7 @@ func InitCa(path string, password string, subject string) error {
 
 	caFiles := []CaFile{
 		{path: path + DefaultCertsDir, permissons: 0700, isDir: true},
+		{path: path + DefaultNewCertsDir, permissons: 0700, isDir: true},
 		{path: path + DefaultCrlDir, permissons: 0700, isDir: true},
 		{path: path + DefaultCsrDir, permissons: 0700, isDir: true},
 		{path: path + DefaultPrivateKeysDir, permissons: 0700, isDir: true},
@@ -411,14 +462,20 @@ func InitCa(path string, password string, subject string) error {
 	}
 	openssl := New(cfg)
 
-	privateKeyPath := path + DefaultPrivateKeysDir + "/" + DefaultRootCaPrivateKeyName
-	_, _, err = openssl.GeneratePrivateKey(password, privateKeyPath)
+	caPrivateKeyPath := path + DefaultPrivateKeysDir + "/" + DefaultRootCaPrivateKeyName
+	_, _, err = openssl.GeneratePrivateKey(password, caPrivateKeyPath)
 	if err != nil {
 		return err
 	}
 
-	csrPath := path + DefaultCsrDir + "/" + DefaultRootCaCsrName
-	_, _, err = openssl.Req(subject, privateKeyPath, password, csrPath)
+	caCsrPath := path + DefaultCsrDir + "/" + DefaultRootCaCsrName
+	_, _, err = openssl.Req(subject, caPrivateKeyPath, password, caCsrPath)
+	if err != nil {
+		return err
+	}
+
+	caCertPath := path + DefaultCertsDir + "/" + DefaultRootCaCertName
+	_, _, err = openssl.X590(password, caPrivateKeyPath, caCsrPath, days, caCertPath)
 	if err != nil {
 		return err
 	}
