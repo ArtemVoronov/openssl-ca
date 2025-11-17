@@ -1,25 +1,61 @@
 package openssl
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
 	"time"
 )
 
-func NewTestOpenssl() Openssl {
+const (
+	testOpensslCaConfigSrc  = "../../config/test.ca.openssl.cnf"
+	testCaPath              = "/tmp/openssl_testing/test_ca"
+	testOpensslCaConfigPath = testCaPath + "/" + "openssl.cnf"
+	testCaPassword          = "password"
+	testCaSubject           = "/CN=Test Root CA"
+	testCaDays              = 7300
+	testCaTimeout           = 10 * time.Second
+)
+
+func TestMain(m *testing.M) {
+	if err := setUpTestCa(); err != nil {
+		fmt.Printf("error during creating test ca: %v", err)
+		os.Exit(1)
+	}
+
+	exitCode := m.Run()
+
+	if err := cleanUpTestCa(); err != nil {
+		fmt.Printf("error during cleaning test ca: %v", err)
+		os.Exit(1)
+	}
+
+	os.Exit(exitCode)
+}
+
+func setUpTestCa() error {
+	return InitCa(testOpensslCaConfigSrc, testCaPath, testCaPassword, testCaSubject, testCaDays)
+}
+
+func cleanUpTestCa() error {
+	return os.RemoveAll(testCaPath)
+}
+
+func newTestOpenssl() Openssl {
 	var testConfig Config = Config{
 		CommandPath: "openssl",
-		ConfigPath:  "/etc/ssl/openssl.cnf",
-		Timeout:     10 * time.Second,
+		ConfigPath:  testOpensslCaConfigPath,
+		Timeout:     testCaTimeout,
 	}
 	return New(testConfig)
 }
+
 func TestSelfCheckAndNormalize(t *testing.T) {
-	openssl := NewTestOpenssl()
+	openssl := newTestOpenssl()
 	expectedCommandPath := "/opt/homebrew/bin/openssl"
-	expectedConfigPath := "/etc/ssl/openssl.cnf"
-	expectedTimeout := 10 * time.Second
+	expectedConfigPath := testOpensslCaConfigPath
+	expectedTimeout := testCaTimeout
 
 	err := openssl.SelfCheckAndNormalize()
 	if err != nil {
@@ -47,7 +83,7 @@ func TestSelfCheckAndNormalize(t *testing.T) {
 }
 
 func TestVersion(t *testing.T) {
-	openssl := NewTestOpenssl()
+	openssl := newTestOpenssl()
 
 	stdout, stderr, err := openssl.Version()
 	if err != nil {
@@ -67,7 +103,7 @@ func TestVersion(t *testing.T) {
 }
 
 func TestGenereatePrivateKeyWithoutPassword(t *testing.T) {
-	openssl := NewTestOpenssl()
+	openssl := newTestOpenssl()
 	testPassword := ""
 	testOut := "" // no out path, send result to stdout
 	expectedBlockHeader := "-----END PRIVATE KEY-----"
@@ -85,7 +121,7 @@ func TestGenereatePrivateKeyWithoutPassword(t *testing.T) {
 }
 
 func TestGenereatePrivateKeyWithPassword(t *testing.T) {
-	openssl := NewTestOpenssl()
+	openssl := newTestOpenssl()
 	testPassword := "password"
 	testOut := "" // no out path, send result to stdout
 	expectedBlockHeader := "-----END ENCRYPTED PRIVATE KEY-----"
@@ -103,24 +139,7 @@ func TestGenereatePrivateKeyWithPassword(t *testing.T) {
 }
 
 func TestCa(t *testing.T) {
-	testOpensslCaConfig := "../../config/test.ca.openssl.cnf"
-	testCaPath := "/tmp/openssl_testing/test_ca"
-	testCaPassword := "password"
-	testCaSubject := "/CN=Test Root CA"
-	testCaDays := 7300
-
-	err := InitCa(testOpensslCaConfig, testCaPath, testCaPassword, testCaSubject, testCaDays)
-	if err != nil {
-		t.Errorf("expected no errors during creating ca, but it has: %v\n", err)
-		return
-	}
-
-	var testConfig Config = Config{
-		CommandPath: "openssl",
-		ConfigPath:  testCaPath + "/openssl.cnf",
-		Timeout:     10 * time.Second,
-	}
-	openssl := New(testConfig)
+	openssl := newTestOpenssl()
 
 	testPassword := "password"
 	testDays := 365
@@ -135,12 +154,6 @@ func TestCa(t *testing.T) {
 
 	if !strings.Contains(stdout, expectedBlockHeader) {
 		t.Errorf("expected string in stdout: %v, but it is missed\n", expectedBlockHeader)
-		return
-	}
-
-	err = os.RemoveAll(testCaPath)
-	if err != nil {
-		t.Errorf("expected no errors, but it has: %v\n", err)
 		return
 	}
 }
@@ -163,3 +176,64 @@ AvvT+qUFICRwjou/bUUpgvs9MsS3nLnzIiwZa2UZi7W8LDqU2a1WG1LmjJTxP8qw
 Xxx40IZU5Mwg8b244xM3v2PZsAcj9Jzz9pmaCsQENhhHtBvpXCw44Yjfu1fOU2B5
 GRtx0NbgqwUwhx9f
 -----END CERTIFICATE REQUEST-----`
+
+func TestReq(t *testing.T) {
+	openssl := newTestOpenssl()
+	testPassword := "password"
+	testSubject := "/CN=test.ru"
+	testPrivateKeyPath := testCaPath + DefaultPrivateKeysDir + "/private.key"
+	testCsrPath := "" // no out, print to stdout
+
+	expectedBlockHeader := "-----BEGIN CERTIFICATE-----"
+
+	_, _, err := openssl.GeneratePrivateKey(testPassword, testPrivateKeyPath)
+	if err != nil {
+		t.Errorf("expected no errors, but it has: %v\n", err)
+		return
+	}
+
+	stdout, _, err := openssl.Req(testSubject, testPrivateKeyPath, testPassword, testCsrPath)
+	if err != nil {
+		t.Errorf("expected no errors, but it has: %v\n", err)
+		return
+	}
+
+	if !strings.Contains(stdout, expectedBlockHeader) {
+		t.Errorf("expected string in stdout: %v, but it is missed\n", expectedBlockHeader)
+		return
+	}
+}
+func TestX509(t *testing.T) {
+	openssl := newTestOpenssl()
+	testPassword := "password"
+	testSubject := "/CN=test.ru"
+	testDays := 365
+	testPrivateKeyPath := testCaPath + DefaultPrivateKeysDir + "/private.key"
+	testCsrPath := testCaPath + DefaultCsrDir + "/csr.pem"
+	testCertPath := "" // no out, print to stdout
+
+	expectedBlockHeader := "-----BEGIN CERTIFICATE-----"
+
+	_, _, err := openssl.GeneratePrivateKey(testPassword, testPrivateKeyPath)
+	if err != nil {
+		t.Errorf("expected no errors, but it has: %v\n", err)
+		return
+	}
+
+	_, _, err = openssl.Req(testSubject, testPrivateKeyPath, testPassword, testCsrPath)
+	if err != nil {
+		t.Errorf("expected no errors, but it has: %v\n", err)
+		return
+	}
+
+	stdout, _, err := openssl.X590(testPassword, testPrivateKeyPath, testCsrPath, testDays, testCertPath)
+	if err != nil {
+		t.Errorf("expected no errors, but it has: %v\n", err)
+		return
+	}
+
+	if !strings.Contains(stdout, expectedBlockHeader) {
+		t.Errorf("expected string in stdout: %v, but it is missed\n", expectedBlockHeader)
+		return
+	}
+}
