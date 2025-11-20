@@ -1,0 +1,44 @@
+openapi: 3.1.0
+info:
+  title: openssl-ca
+  description: |
+    Simple CA based on openssl (version 3+). It allows to sign CSRs and get existing certificats by its serial number
+  version: 1.0.0
+servers:
+  - url: 'https://localhost:8080'
+paths:
+  "/api/v1/cert/{serial}":
+    get:
+      summary: Get the certificate by serial number
+      description: Retrieves the certificate by serial number
+      parameters:
+        - $ref: "#/components/parameters/serialParam"
+      responses:
+        "200":
+          description: The x509 certificate in PEM format encoded in base64
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/certificate"
+        "400":
+          description: Some bad request
+        "401":
+          description: Missed or expied jwt
+        "403":
+          description: Forbidden permissions
+components:
+  schemas:
+    serial:
+      type: string
+    certificate:
+      type: object
+      properties:
+        pem:
+          type: string
+  parameters:
+    serialParam:
+      name: serial
+      in: path
+      required: true
+      schema:
+        $ref: "#/components/schemas/serial"
